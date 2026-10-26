@@ -1,5 +1,6 @@
 from larccommon.widgets.avatar import make_avatar
 from larccommon.widgets.card import StudentCard
+from larccommon.widgets.staff_card import StaffCard
 from larccommon.widgets.todo_kanban import TodoKanban
 from larccommon.widgets.card_config import (
     CARD_THEMES,
@@ -37,6 +38,7 @@ __all__ = [
     "DEFAULT_CONFIG",
     "make_avatar",
     "StudentCard",
+    "StaffCard",
     "fill_cards_grid",
     "FileViewer",
     "FilePanel",

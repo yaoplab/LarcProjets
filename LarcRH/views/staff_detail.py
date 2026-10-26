@@ -27,7 +27,7 @@ from larccommon.widgets.themed_widget import ThemedDialog
 from phibuilder.phi.scale import SpacingToken
 
 from LarcRH.common.hr_database import HRDatabase
-from LarcRH.views.staff_grid import _make_avatar, _find_photo
+from larccommon.widgets.staff_card import find_staff_photo as _find_photo, make_initials_avatar as _make_avatar
 
 class _CategoryButton(QPushButton):
     """Bouton de catégorie dans la sidebar — icône + libellé, checkable."""

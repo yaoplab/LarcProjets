@@ -258,7 +258,7 @@ def _b64url(data: bytes) -> str:
 class OAuth2Manager:
     PORT           = 8765
     HOSTED_DOMAIN  = 'arc-en-ciel.org'
-    APP_DISPLAY    = 'LarcSuperviseur'
+    APP_DISPLAY    = 'Larc'  # remplacé par init_app(app_name)
     REDIRECT       = f'http://localhost:{PORT}/callback'
     GOOGLE_AUTH    = 'https://accounts.google.com/o/oauth2/v2/auth'
     GOOGLE_TOKEN   = 'https://oauth2.googleapis.com/token'

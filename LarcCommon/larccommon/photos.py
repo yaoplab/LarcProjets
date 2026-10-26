@@ -51,6 +51,19 @@ def get_photo_path(sid: int) -> str:
     return cache
 
 
+def find_staff_photo(staff_id: int) -> str:
+    """Photo d'un membre du personnel : dossier staff_photos_dir (LarcRH/photos
+    par défaut) puis photos_dir. Chaîne vide si aucune n'est trouvée."""
+    for key in ("staff_photos_dir", "photos_dir"):
+        folder = app_config.get(key)
+        if not folder:
+            continue
+        path = os.path.join(folder, f"{staff_id}{PHOTO_EXT}")
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
 def ensure_cached(sid: int) -> bool:
     cache = _cache_path(sid)
     if os.path.isfile(cache):

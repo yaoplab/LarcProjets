@@ -26,15 +26,9 @@ from larccommon.auth import OAuth2Manager
 from larccommon.app_config import app_config
 from larccommon.l10n import Translator, _
 from larccommon.safe_slot import safe_slot
-
-try:
-    from LarcSuperviseur.common.trace import trace
-except ImportError:
-
-    from larccommon.error_reporting import get_reporter
-    get_reporter().report_exception()
-    def trace(msg):
-        pass
+from larccommon.trace import trace
+from larccommon.photos import get_uncached_ids, PhotoPreloader
+from larccommon.paths import larc_root
 
 
 class _Worker(QThread):
@@ -56,11 +50,17 @@ class _Worker(QThread):
 
 
 class LoginWindow(QWidget):
-    """Fenêtre de connexion partagée — utilisée par LarcSuperviseur, LarcSecretaire, LarcHub.
+    """Fenêtre de connexion partagée — utilisée par LarcSecretaire, LarcHub,
+    LarcRH, LarcCompta, LarcConfig, LarcDocs.
 
     Usage:
         window = LoginWindow(on_success=lambda: open_main_window())
+        # ou : l'app fournit sa fenêtre principale (préchargement photos inclus)
+        window = LoginWindow(main_window_factory=MainWindow, app_name="LarcXxx")
         window.show()
+
+    LarcCommon ne connaît aucune app : sans on_success ni main_window_factory
+    (et sans surcharge de _open_main_window), la connexion affiche une erreur.
     """
 
     _login_attempts: dict[str, dict] = {}
@@ -90,10 +90,16 @@ class LoginWindow(QWidget):
         subtitle=None,
         on_intranet_login=None,
         on_cloud_login=None,
+        main_window_factory=None,
+        logo_path=None,
+        app_name=None,
     ):
         super().__init__()
         self._on_success = on_success or self._open_main_window
+        self._main_window_factory = main_window_factory
+        self._logo_path = logo_path
         self._title_prefix = title_prefix or _("app.title.superviseur")
+        self._app_name = app_name or self._title_prefix
         self._subtitle = subtitle or _("login.subtitle.superviseur")
         self._on_intranet_login = on_intranet_login
         self._on_cloud_login = on_cloud_login
@@ -191,12 +197,7 @@ class LoginWindow(QWidget):
         outer.setContentsMargins(theme_manager.image.theme_btn, ds.table_row_min, theme_manager.image.theme_btn, ds.table_row_min)
         outer.setSpacing(0)
 
-        logo_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "LarcSuperviseur",
-            "img",
-            "logoAEC.png",
-        )
+        logo_path = self._resolve_logo_path()
         self._logo_label = QLabel()
         if os.path.exists(logo_path):
             pix = QPixmap(logo_path)
@@ -260,6 +261,17 @@ class LoginWindow(QWidget):
         self._net_timer.setInterval(30000)
         self._net_timer.timeout.connect(self._update_network_status)
         self._net_timer.start()
+
+    def _resolve_logo_path(self) -> str:
+        """Logo explicite, sinon <racine>/logo/logo.png, repli sur l'ancien
+        <racine>/LarcSuperviseur/img/logoAEC.png (simple fichier image)."""
+        if self._logo_path:
+            return str(self._logo_path)
+        root = larc_root()
+        default = root / "logo" / "logo.png"
+        if default.exists():
+            return str(default)
+        return str(root / "LarcSuperviseur" / "img" / "logoAEC.png")
 
     def eventFilter(self, obj, event):
         if obj is self._logo_label and event.type() == QEvent.MouseButtonDblClick:
@@ -413,19 +425,26 @@ class LoginWindow(QWidget):
             self._show_error(err or "Authentification echouee.")
             return
         log(f"Connexion : {getattr(res, 'full_name', '?')}")
-        self._on_success()
+        if self._on_success() is False:
+            return  # fenêtre principale non ouverte : on garde le login et son erreur
         self.close()
 
     def _open_main_window(self):
-        from LarcSuperviseur.common.photos import get_uncached_ids, PhotoPreloader
-        from LarcSuperviseur.views.main_window import MainWindow
+        """Callback par d\u00e9faut : pr\u00e9charge les photos puis ouvre la fen\u00eatre
+        fournie par l'app (main_window_factory). Surchargeable."""
+        if self._main_window_factory is None:
+            log("LoginWindow: ni on_success ni main_window_factory fourni \u2014 "
+                "impossible d'ouvrir la fen\u00eatre principale", "ERROR")
+            self._show_error(_("login.error.no_main_window",
+                               "Fenêtre principale non configurée pour cette application."))
+            return False
 
         student_ids = get_uncached_ids()
         if student_ids:
             progress = QProgressDialog(
                 "Pr\u00e9paration des photos...", "Annuler", 0, len(student_ids), self
             )
-            progress.setWindowTitle("LarcSuperviseur")
+            progress.setWindowTitle(self._app_name)
             progress.setWindowModality(Qt.WindowModal)
             progress.setMinimumDuration(0)
             progress.setValue(0)
@@ -439,14 +458,14 @@ class LoginWindow(QWidget):
             preloader.start()
             self._preloader = preloader
         else:
-            self._do_open_main_window(MainWindow)
+            self._do_open_main_window()
 
     @safe_slot("LoginWindow._on_preloader_finished")
     def _on_preloader_finished(self):
-        self._do_open_main_window(MainWindow)
+        self._do_open_main_window()
 
-    def _do_open_main_window(self, MainWindow):
-        self.main = MainWindow()
+    def _do_open_main_window(self):
+        self.main = self._main_window_factory()
         self.main.resize(1200, 750)
         self.main.showMaximized()
         self.close()
@@ -503,7 +522,7 @@ class LoginWindow(QWidget):
         else:
             self._tabs.setTabVisible(0, False)
             self._tabs.setTabVisible(1, False)
-            self._err_label.setText("Acc\u00e8s \u00e0 LarcSuperviseur Impossible")
+            self._err_label.setText(f"Acc\u00e8s \u00e0 {self._app_name} Impossible")
             self._net_label.setText("Hors ligne")
             self._net_label.setStyleSheet(
                 f"color: {p.text_disabled}; font-weight: bold; font-size: {theme_manager.font_size(13)}px;"

@@ -70,9 +70,12 @@ Format JSON avec clés contextuelles (`module.composant.action`).
 ```python
 from larccommon.logger import log
 
-log("Message")                  # Écrit dans superviseur.log + stdout
+log("Message")                  # Écrit dans %LOCALAPPDATA%\Larc\logs\<app>.log
+set_log_file("LarcRH")          # Fichier par app (appelé par init_app)
 set_log_to_file(False)          # Désactiver fichier
 get_log_path()                  # Chemin du fichier log
+# Repli : LarcCommon\superviseur.log si LOCALAPPDATA absent/non inscriptible.
+# set_log_filename(chemin) (ex. LarcProf → elarc.log) reste prioritaire.
 ```
 
 ### network.py — Détection réseau

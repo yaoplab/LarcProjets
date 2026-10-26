@@ -1,14 +1,12 @@
 """StaffGrid — grille photos responsive (QScrollArea + QGridLayout adaptatif)."""
 from __future__ import annotations
 
-import os
 import queue
 
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
-from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QGridLayout,
-    QLabel, QPushButton, QFrame, QSizePolicy, QComboBox, QFileDialog,
+    QLabel, QPushButton, QSizePolicy, QComboBox, QFileDialog,
     QProgressBar, QApplication,
 )
 
@@ -17,111 +15,14 @@ from phibuilder.widgets import M3TableWidget
 from larccommon.design_system import ds
 from phibuilder.phi.scale import SpacingToken
 from PySide6.QtWidgets import QHeaderView
-from larccommon.theme import theme_manager, staff_type_color, staff_type_from_flags
+from larccommon.theme import theme_manager
 from larccommon.icons import icon as md3_icon
 from larccommon.safe_slot import safe_slot
 from larccommon.widgets.staff_type_legend import StaffTypeLegend
+from larccommon.widgets.staff_card import StaffCard, CARD_W
 
-
-def _staff_type_key(data: dict) -> str:
-    """Clé de type d'employé depuis les flags de la ligne (grille)."""
-    flags = {
-        "type_director": data.get("is_adm"),
-        "type_coordonator": data.get("is_coordonator"),
-        "type_supervisor": data.get("is_supervisor"),
-        "type_secretary": data.get("is_secretary"),
-        "type_teacher": data.get("is_teacher"),
-    }
-    return staff_type_from_flags(flags)
-
-# Dimensions demandées : largeur 200, hauteur 200×φ ≈ 324, photo 140×140
-CARD_W = ds.sp(SpacingToken.XXXL) + ds.sp(SpacingToken.XL) + ds.sp(SpacingToken.SM)  # 136+52+12 = 200
-CARD_H = int(CARD_W * ds.GOLDEN)                                                    # 200×φ = 323
-PHOTO = ds.sp(SpacingToken.XXXL) + ds.sp(SpacingToken.XXS)                          # 136+4 = 140
 SPACING = ds.space_xs    # 8
 MARGIN = ds.space_xs     # 8
-
-
-def _elide_text(text: str, px_width: int, font_px: int) -> str:
-    """Tronque le texte avec … pour une largeur donnée (une seule ligne)."""
-    f = QFont()
-    f.setPixelSize(theme_manager.font_size(font_px))
-    return QFontMetrics(f).elidedText(text, Qt.ElideRight, max(px_width, 20))
-
-_STATUS_LABELS = {
-    "actif": "Actif", "suspendu": "Suspendu",
-    "en_préavis": "En préavis", "parti": "Parti",
-}
-
-
-# Cache des photos/avatars par (id, taille) — le rebuild de la grille
-# (thème, filtres) rechargeait chaque image du disque → 1-3 s de latence
-# proportionnelle au nombre de vignettes (signalé 2026-08-16).
-# Chaque entrée = (pixmap, is_real_photo) : si un AVATAR est en cache et
-# qu'une vraie photo arrive sur le disque, on la recharge automatiquement.
-_PHOTO_CACHE: dict[tuple, tuple[QPixmap, bool]] = {}
-_PHOTO_CACHE_MAX = 500
-
-
-def _cached_photo(staff_id: int, size: int, fallback_name: str) -> QPixmap:
-    key = (staff_id, size)
-    path = _find_photo(staff_id)
-    if key in _PHOTO_CACHE:
-        pix, was_photo = _PHOTO_CACHE[key]
-        if was_photo or not path:
-            return pix
-        # Avatar en cache mais une photo vient d'arriver → recharger
-        del _PHOTO_CACHE[key]
-    pix = None
-    if path:
-        pix = QPixmap(path)
-        if pix.isNull():
-            pix = None
-    if pix is None:
-        pix = _make_avatar(fallback_name, size)
-        is_photo = False
-    else:
-        pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        is_photo = True
-    if len(_PHOTO_CACHE) >= _PHOTO_CACHE_MAX:
-        _PHOTO_CACHE.clear()
-    _PHOTO_CACHE[key] = (pix, is_photo)
-    return pix
-
-
-def _find_photo(staff_id: int) -> str:
-    """Cherche la photo du staff dans LarcRH puis LarcSuperviseur.
-
-    Retourne le chemin complet ou une chaîne vide si aucune trouvée.
-    """
-    base = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    candidates = [
-        os.path.join(base, "LarcRH", "photos", f"{staff_id}.png"),
-        os.path.join(base, "LarcSuperviseur", "photos", f"{staff_id}.png"),
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return ""
-
-
-def _make_avatar(name: str, size: int = 100) -> QPixmap:
-    """Avatar à initiales avec couleur déterministe (stable entre sessions)."""
-    pix = QPixmap(size, size)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    hue = sum(ord(c) for c in (name or "?")) % 360
-    p.setBrush(QColor.fromHsl(hue, 160, 120))
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(0, 0, size, size, size // 4, size // 4)
-    initials = "".join(part[0].upper() for part in (name or "?").split()[:2]) or "?"
-    p.setPen(QColor(255, 255, 255))
-    font = QFont("Segoe UI", size // 3, QFont.Bold)
-    p.setFont(font)
-    p.drawText(0, 0, size, size, Qt.AlignCenter, initials)
-    p.end()
-    return pix
 
 
 def _open_dedicated_connection():
@@ -235,199 +136,6 @@ class _PersistentLoader(QThread):
                     from larccommon.error_reporting import get_reporter
                     get_reporter().report_exception()
                     pass
-
-
-class _StaffCard(QFrame):
-
-    def __init__(self, data: dict, parent=None):
-        super().__init__(parent)
-        self._data = data
-        self.setObjectName("staff_card")
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumWidth(CARD_W)
-        self.setFixedHeight(CARD_H)
-        self._status_lbl: QLabel | None = None
-        self._styled_labels: list[QLabel] = []
-        # Couleur du TYPE d'employé — utilisée pour la BORDURE + les fonctions
-        self._role_badge, _, _ = staff_type_color(_staff_type_key(data))
-        self.setStyleSheet(self._style())
-        self._setup_ui()
-        ds.theme_changed.connect(self._restyle)
-
-    def _style(self) -> str:
-        p = theme_manager.palette
-        return f"""
-            #staff_card {{
-                background: {p.surface}; border: 2px solid {self._role_badge};
-                border-radius: {ds.radius_sm}px;
-            }}
-            #staff_card:hover {{ border-color: {p.primary}; }}
-        """
-
-    def _setup_ui(self):
-        p = theme_manager.palette
-        s = theme_manager.font_size
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(ds.space_xs, ds.space_xs, ds.space_xs, ds.space_xs)
-        layout.setSpacing(ds.space_xxs)
-
-        # Photo 140×140 — chargée EN DIFFÉRÉ (load_photo) : la grille s'affiche
-        # immédiatement, les photos arrivent juste après (fini les 3 s d'attente
-        # pour afficher la liste — les PNG font jusqu'à 2 Mo, signalé 2026-08-16)
-        self._photo_lbl = QLabel()
-        self._photo_lbl.setFixedSize(PHOTO, PHOTO)
-        self._photo_lbl.setAlignment(Qt.AlignCenter)
-        self._photo_lbl.setStyleSheet(
-            f"QLabel {{ border-radius: {PHOTO // 2}px; background: transparent; }}")
-        layout.addWidget(self._photo_lbl, 0, Qt.AlignCenter)
-
-        # NOM (1ʳᵉ ligne, gras) + Prénoms (2ᵉ ligne, tronqués)
-        self._name_lbl = QLabel(self._data.get("last_name", "") or "—")
-        self._name_lbl.setAlignment(Qt.AlignCenter)
-        self._name_lbl.setStyleSheet(
-            f"font-size: {s(13)}px; font-weight: bold; color: {p.text_strong}; border: none;")
-        layout.addWidget(self._name_lbl)
-        self._styled_labels.append(self._name_lbl)
-
-        first = self._data.get("first_name", "") or ""
-        self._first_lbl = QLabel(_elide_text(first, CARD_W - 2 * ds.space_sm, 11))
-        self._first_lbl.setAlignment(Qt.AlignCenter)
-        self._first_lbl.setStyleSheet(
-            f"font-size: {s(11)}px; color: {p.text_soft}; border: none;")
-        self._first_lbl.setVisible(bool(first))
-        layout.addWidget(self._first_lbl)
-        self._styled_labels.append(self._first_lbl)
-
-        # Ligne blanche (séparateur avant les fonctions)
-        self._sep = QFrame()
-        self._sep.setFrameShape(QFrame.HLine)
-        self._sep.setStyleSheet(f"color: {p.border_light}; border: none; max-height: 1px;")
-        layout.addWidget(self._sep)
-
-        # Fonctions — UNE PAR LIGNE, chacune avec sa pastille (couleur du type)
-        if self._data.get("is_staff"):
-            roles_full = {
-                'type_DRH': 'Directeur des Ressources Humaines',
-                'type_Comptable': 'Comptable',
-                'type_ressources_Humaines': 'Chargé des Ressources Humaines',
-                'type_Bulletin_Releves': 'Chargé des Bulletins et Relevés',
-            }
-            titres = [label for key, label in roles_full.items() if self._data.get(key)]
-        else:
-            titres = []
-            if self._data.get("is_teacher"):     titres.append("Enseignant")
-            if self._data.get("is_coordonator"): titres.append("Coordinateur")
-            if self._data.get("is_adm"):         titres.append("Administrateur")
-        self._role_lbls: list[QLabel] = []
-        for titre in titres:
-            lbl = QLabel(f"● {titre}")
-            lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet(
-                f"font-size: {s(10)}px; font-weight: bold; "
-                f"color: {self._role_badge}; border: none;")
-            layout.addWidget(lbl)
-            self._role_lbls.append(lbl)
-            self._styled_labels.append(lbl)
-
-        # NB : catégorie pro, matricule et campus ne sont PLUS affichés sur la
-        # vignette (carte 200×323 serrée) — ils restent dans la fiche détail.
-
-        # Statut (badge coloré) — l'absence du JOUR prime sur le statut d'emploi
-        status = (self._data.get("emp_status") or "actif").lower()
-        status_label = _STATUS_LABELS.get(status, status.title())
-        status_colors = {
-            "actif": (p.success, p.success),
-            "suspendu": (p.tertiary, p.tertiary),
-            "en_préavis": (p.tertiary, p.tertiary),
-            "parti": (p.error, p.error),
-        }
-        sc_bg, sc_fg = status_colors.get(status, (p.outline_variant, p.text_soft))
-        if self._data.get("absent_today"):
-            status_label = "Absent aujourd'hui"
-            sc_fg = p.error
-        self._status_lbl = QLabel(f"● {status_label}")
-        self._status_lbl.setStyleSheet(
-            f"font-size: {s(9)}px; font-weight: bold; color: {sc_fg}; "
-            f"background: transparent; border: none; padding: 1px 0px;")
-
-        layout.addStretch()
-
-        # Bouton événement + STATUT JUSTE À SA DROITE
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(ds.space_xs)
-        btn_row.addStretch()
-        event_btn = QPushButton()
-        event_btn.setIcon(md3_icon("event", color=p.primary, size=16))
-        event_btn.setFixedSize(ds.space_lg, ds.space_lg)
-        event_btn.setCursor(Qt.PointingHandCursor)
-        event_btn.setToolTip("Événements")
-        event_btn.clicked.connect(lambda checked: self._on_event())
-        event_btn.setStyleSheet(
-            f"QPushButton {{ border: 1px solid {p.outline}; border-radius: "
-            f"{ds.radius_xs}px; background: transparent; }} "
-            f"QPushButton:hover {{ background: {p.surface_variant}; }}")
-        btn_row.addWidget(event_btn)
-        btn_row.addWidget(self._status_lbl)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-    @safe_slot("_StaffCard._on_event")
-    def _on_event(self):
-        from LarcRH.views.staff_events import open_staff_event_generator
-        open_staff_event_generator(self._data, self)
-
-    @safe_slot("_StaffCard._restyle")
-    def _restyle(self):
-        p = theme_manager.palette
-        s = theme_manager.font_size
-        # Relire la couleur du type AVANT le style (bordure déclinée par thème)
-        self._role_badge, _, _ = staff_type_color(_staff_type_key(self._data))
-        self.setStyleSheet(self._style())
-        # Nom + Prénoms (relire l'élision avec la nouvelle échelle de police)
-        self._name_lbl.setStyleSheet(
-            f"font-size: {s(13)}px; font-weight: bold; color: {p.text_strong}; border: none;")
-        first = self._data.get("first_name", "") or ""
-        self._first_lbl.setText(_elide_text(first, CARD_W - 2 * ds.space_sm, 11))
-        self._first_lbl.setStyleSheet(
-            f"font-size: {s(11)}px; color: {p.text_soft}; border: none;")
-        self._sep.setStyleSheet(
-            f"color: {p.border_light}; border: none; max-height: 1px;")
-        # Rôle
-        # Fonctions (une par ligne) — relire la couleur du type (déclinaison)
-        for lbl in self._role_lbls:
-            lbl.setStyleSheet(
-                f"font-size: {s(10)}px; font-weight: bold; "
-                f"color: {self._role_badge}; border: none;")
-        # Statut — l'absence du JOUR prime sur le statut d'emploi
-        if self._status_lbl:
-            if self._data.get("absent_today"):
-                status_label = "Absent aujourd'hui"
-                sc_fg = p.error
-            else:
-                status = (self._data.get("emp_status") or "actif").lower()
-                status_label = _STATUS_LABELS.get(status, status.title())
-                status_colors = {
-                    "actif": p.success, "suspendu": p.tertiary,
-                    "en_préavis": p.tertiary, "parti": p.error,
-                }
-                sc_fg = status_colors.get(status, p.text_soft)
-            self._status_lbl.setText(f" ● {status_label}")
-            self._status_lbl.setStyleSheet(
-                f"font-size: {s(9)}px; font-weight: bold; color: {sc_fg}; "
-                f"background: transparent; border: none; padding: 1px 0px;")
-
-    def load_photo(self):
-        """Charge la photo (cache partagé) — appelé en différé après affichage."""
-        self._photo_lbl.setPixmap(_cached_photo(
-            self._data.get("id", 0), PHOTO, self._data.get("full_name", "")))
-
-    def mouseDoubleClickEvent(self, event):
-        w = self.parent()
-        while w:
-            if isinstance(w, StaffGrid):
-                w.staff_selected.emit(self._data)
-                return
-            w = w.parent()
 
 
 class StaffGrid(QWidget):
@@ -732,26 +440,34 @@ class StaffGrid(QWidget):
 
         self._cols = self._cols_for_width()
         for i, data in enumerate(self._all_data):
-            card = _StaffCard(data)
+            card = StaffCard(data)
+            card.event_requested.connect(
+                lambda d, c=card: self._on_card_event(d, c))
+            card.activated.connect(self.staff_selected)
             self._grid.addWidget(card, i // self._cols, i % self._cols)
 
         # Photos en différé : la grille s'affiche immédiatement, les photos
         # arrivent par lots de 10 (pas de processEvents — anti-pattern interdit)
         QTimer.singleShot(0, lambda: self._load_photos_async(0))
 
+    @safe_slot("StaffGrid._on_card_event")
+    def _on_card_event(self, data: dict, card):
+        from LarcRH.views.staff_events import open_staff_event_generator
+        open_staff_event_generator(data, card)
+
     def _load_photos_async(self, start: int):
         cards = [
             item.widget()
             for i in range(self._grid.count())
             if (item := self._grid.itemAt(i)) and item.widget()
-            and isinstance(item.widget(), _StaffCard)
+            and isinstance(item.widget(), StaffCard)
         ]
         for c in cards[start:start + 10]:
-            if c._photo_lbl.pixmap().isNull():
+            if not c.has_photo():
                 c.load_photo()
         if start + 10 < len(cards):
             QTimer.singleShot(0, lambda: self._load_photos_async(start + 10))
-        elif any(c._photo_lbl.pixmap().isNull() for c in cards):
+        elif any(not c.has_photo() for c in cards):
             # Des cartes reconstruites entre-temps (showEvent) n'ont pas de
             # photo : relancer une passe — auto-réparation du chargement
             QTimer.singleShot(50, lambda: self._load_photos_async(0))

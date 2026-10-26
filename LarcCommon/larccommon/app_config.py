@@ -1,8 +1,10 @@
 import os
 from .database import db
 from .logger import log
+from .paths import larc_root
 
-_here = os.path.dirname(os.path.abspath(__file__))
+# Clés de chemin : une valeur relative (en base) est résolue depuis larc_root().
+_PATH_KEYS = ('photos_dir', 'photos_cache_dir', 'staff_photos_dir')
 
 
 class AppConfig:
@@ -10,9 +12,11 @@ class AppConfig:
 
     DEFAULTS = {
         'photos_dir': os.path.normpath(
-            os.path.join(_here, '..', '..', 'LarcSuperviseur', 'photos')),
+            str(larc_root() / 'LarcSuperviseur' / 'photos')),
         'photos_cache_dir': os.path.normpath(
-            os.path.join(_here, '..', '..', 'LarcSuperviseur', 'photos', 'cache')),
+            str(larc_root() / 'LarcSuperviseur' / 'photos' / 'cache')),
+        'staff_photos_dir': os.path.normpath(
+            str(larc_root() / 'LarcRH' / 'photos')),
     }
 
     def __init__(self):
@@ -40,7 +44,12 @@ class AppConfig:
     def get(self, key: str, default=None):
         if not self._loaded:
             self.load()
-        return self._cache.get(key, default)
+        value = self._cache.get(key, default)
+        if key in _PATH_KEYS and isinstance(value, str) and value \
+                and not os.path.isabs(value):
+            # Chemin relatif en base : relatif à la racine du monorepo.
+            value = os.path.normpath(str(larc_root() / value))
+        return value
 
 
 app_config = AppConfig()

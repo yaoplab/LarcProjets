@@ -148,6 +148,27 @@ def _remove_lock() -> None:
         _LOCK_PATH = None
 
 
+# -- identité de l'app ----------------------------------------------------
+def _apply_app_identity(app_name: str) -> None:
+    """Nom de l'app dans LarcCommon : fichier log, application_name
+    PostgreSQL (audit), page de retour OAuth2. Une valeur déjà personnalisée
+    par l'app (db.app_name, set_log_filename) est conservée."""
+    try:
+        from .logger import set_log_file
+        set_log_file(app_name)
+    except Exception:
+        get_reporter().report_exception()
+    try:
+        from .database import DEFAULT_APP_NAME, db
+        if db.app_name == DEFAULT_APP_NAME:
+            db.app_name = app_name
+        from .auth import OAuth2Manager
+        if OAuth2Manager.APP_DISPLAY == DEFAULT_APP_NAME:
+            OAuth2Manager.APP_DISPLAY = app_name
+    except Exception:
+        get_reporter().report_exception()
+
+
 # -- point d'entrée -----------------------------------------------------
 def init_app(app_name: str, *, qt: bool = True,
              check_updates: bool = True,
@@ -156,6 +177,7 @@ def init_app(app_name: str, *, qt: bool = True,
     APRÈS set_debug(...) et AVANT QApplication. Idempotent."""
     global _APP_NAME, _inited
     _APP_NAME = app_name
+    _apply_app_identity(app_name)
 
     rep = get_reporter()
     if rep is None:

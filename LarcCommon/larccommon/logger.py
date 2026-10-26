@@ -3,15 +3,39 @@ from datetime import datetime
 
 LOG_TO_FILE = True
 
-LOG_FILENAME = 'superviseur.log'
+LOG_FILENAME = 'larc.log'
 
 # Rotation : au-delà de 5 Mo, rotation .1/.2/.3 (elarc.log atteignait 92 Mo)
 _MAX_BYTES = 5 * 1024 * 1024
 _KEEP = 3
 
-_LOG_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), '..', LOG_FILENAME
+# Ancien emplacement commun à toutes les apps : repli si LOCALAPPDATA absent
+# ou non inscriptible.
+_LEGACY_LOG_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'superviseur.log'
 ))
+
+# True dès qu'une app a fixé son fichier via set_log_filename (ex. LarcProf →
+# elarc.log) : set_log_file() (appelé par init_app) ne l'écrase alors pas.
+_EXPLICIT = False
+
+
+def _app_log_path(filename: str) -> str:
+    """%LOCALAPPDATA%\\Larc\\logs\\<filename>, sinon l'ancien superviseur.log."""
+    base = os.environ.get('LOCALAPPDATA')
+    if base:
+        path = os.path.join(base, 'Larc', 'logs', filename)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'a', encoding='utf-8'):
+                pass
+            return os.path.normpath(path)
+        except OSError:
+            pass  # non inscriptible : repli ci-dessous
+    return _LEGACY_LOG_PATH
+
+
+_LOG_PATH = _app_log_path(LOG_FILENAME)
 
 
 def log(msg: str, level: str = "INFO", exc: BaseException | None = None) -> None:
@@ -78,8 +102,20 @@ def get_log_path() -> str:
     return _LOG_PATH
 
 
-def set_log_filename(name: str) -> None:
+def set_log_file(app_name: str) -> None:
+    """Fichier log par app : %LOCALAPPDATA%\\Larc\\logs\\<app_name>.log.
+    Appelé par init_app. Sans effet si l'app a déjà choisi son fichier
+    (set_log_filename)."""
     global _LOG_PATH, LOG_FILENAME
+    if _EXPLICIT:
+        return
+    LOG_FILENAME = f"{app_name}.log"
+    _LOG_PATH = _app_log_path(LOG_FILENAME)
+
+
+def set_log_filename(name: str) -> None:
+    global _LOG_PATH, LOG_FILENAME, _EXPLICIT
+    _EXPLICIT = True
     LOG_FILENAME = name
     _LOG_PATH = os.path.normpath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', name

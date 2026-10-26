@@ -21,8 +21,13 @@ class DBMode(Enum):
     CLOUD    = auto()
 
 
+# Nom neutre par défaut ; init_app(app_name) le remplace (application_name
+# PostgreSQL = colonne « app » de audit_log).
+DEFAULT_APP_NAME = 'Larc'
+
+
 class Database:
-    app_name: str = 'LarcSuperviseur'
+    app_name: str = DEFAULT_APP_NAME
     intranet_db: str = 'NewLarcDB'
     cloud_db: str = 'postgres'
 

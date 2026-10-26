@@ -10,6 +10,7 @@ venv/
 *.log
 *.qss
 *.json
+!larccommon/l10n/*.json
 config.ini
 .error_spool/
 runtime/

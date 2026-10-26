@@ -15,6 +15,7 @@ class CardConfig:
     font_status: int = 13
     font_exit: int = 8
     border_radius: int = 8
+    validation_badge: int = 14   # cercles D/M/P/E sous la photo
 
 
 PHI_COMPACT = CardConfig(
