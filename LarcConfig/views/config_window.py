@@ -18,9 +18,12 @@ from PySide6.QtWidgets import (
 _SECTIONS = [
     ('accueil', 'Accueil', 'home'),
     ('temps', 'Le temps', 'schedule'),
-    ('programmes', 'Programmes et langues', 'school'),
-    ('classes', 'Classes', 'view_module'),
-    ('affectation', 'Affectation élèves-classes', 'group'),
+    ('mat_classes', 'Classes', 'view_module'),
+    ('mat_eleves', 'Élèves par classe', 'group'),
+    ('prim_classes', 'Classes', 'view_module'),
+    ('prim_eleves', 'Élèves par classe', 'group'),
+    ('cl_classes', 'Classes', 'view_module'),
+    ('cl_eleves', 'Élèves par classe', 'group'),
     ('matieres_classe', 'Matières par classe', 'subject'),
     ('types', "Types d'événements", 'event'),
     ('lieux', 'Lieux', 'location_on'),
@@ -33,7 +36,15 @@ _SECTIONS = [
 # « matieres_eleves » (inscription élève × matière) supprimé le 2026-09-22 :
 # livré comme onglet « Élèves » de « matieres_classe » (panel_effectifs.py),
 # jamais comme section séparée — l'entrée placeholder n'a plus lieu d'être.
-_PLANNED = {'programmes', 'classes', 'affectation'}
+# « programmes », « classes », « affectation » remplacés le 2026-10-26 par les
+# écrans Classes / Élèves par classe de chaque campus (common/campus.py).
+_PLANNED = set()
+# Sections « Classes » / « Élèves par classe » → campus (panneaux génériques)
+_CAMPUS_SECTIONS = {
+    'mat_classes': ('classes', 'maternelle'), 'mat_eleves': ('eleves', 'maternelle'),
+    'prim_classes': ('classes', 'primaire'), 'prim_eleves': ('eleves', 'primaire'),
+    'cl_classes': ('classes', 'college_lycee'), 'cl_eleves': ('eleves', 'college_lycee'),
+}
 _ICONS = {k: ic for k, _, ic in _SECTIONS}
 _LABELS = {k: lb for k, lb, _ in _SECTIONS}
 
@@ -42,8 +53,12 @@ _LABELS = {k: lb for k, lb, _ in _SECTIONS}
 _CATEGORIES = [
     ('accueil', 'Accueil', ['accueil']),
     ('temps', 'Le temps', ['temps']),
-    ('ecole', 'École et effectifs', ['programmes', 'classes', 'affectation',
-                                     'matieres_classe']),
+    # Un menu par campus (cf. common/campus.py — clés 'maternelle',
+    # 'primaire', 'college_lycee').
+    ('maternelle', 'Maternelle', ['mat_classes', 'mat_eleves']),
+    ('primaire', 'Primaire', ['prim_classes', 'prim_eleves']),
+    ('college_lycee', 'Collège & Lycée', ['cl_classes', 'cl_eleves',
+                                          'matieres_classe']),
     ('vie', 'Vie scolaire', ['types', 'lieux']),
     ('apparence', 'Apparence et langue', ['themes', 'i18n']),
     ('admin', 'Administration', ['roles', 'logs']),
@@ -109,7 +124,8 @@ class ConfigWindow(QWidget):
             if len(keys) == 1:
                 self._add_nav_button(sl, keys[0], _LABELS[keys[0]], 0)
                 continue
-            head = self._nav_button(title)
+            # « & » = mnémonique Qt sur un bouton → doublé pour l'afficher
+            head = self._nav_button(title.replace('&', '&&'))
             head.clicked.connect(lambda checked, k=cat: self._toggle_category(k))
             self._cat_btns[cat] = head
             sl.addWidget(head)
@@ -255,7 +271,24 @@ class ConfigWindow(QWidget):
             self._switch(key, force=True)
         self._topbar.restyle()
 
+    @safe_slot("ConfigWindow._reload_campus_classes")
+    def _reload_campus_classes(self, campus_key: str):
+        for section, (kind, key) in _CAMPUS_SECTIONS.items():
+            if kind == 'classes' and key == campus_key and section in self._panels:
+                self._panels[section].reload()
+
     def _create(self, section: str):
+        if section in _CAMPUS_SECTIONS:
+            from LarcConfig.views.campus_classes import CampusClassesPanel
+            from LarcConfig.views.eleves_classe import ElevesClassePanel
+            kind, campus_key = _CAMPUS_SECTIONS[section]
+            panel_cls = CampusClassesPanel if kind == 'classes' else ElevesClassePanel
+            panel = panel_cls(self._user, campus_key)
+            if kind == 'eleves':
+                # Écriture réussie → recharger la vue « Classes » du même campus
+                panel.data_changed.connect(
+                    lambda k=campus_key: self._reload_campus_classes(k))
+            return panel
         from LarcConfig.views.panel_accueil import AccueilPanel
         from LarcConfig.views.panel_effectifs import EffectifsPanel
         from LarcConfig.views.panel_i18n import I18nPanel

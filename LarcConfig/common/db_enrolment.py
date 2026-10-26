@@ -6,7 +6,9 @@ ajouteront les fonctions d'UPDATE-only à côté, jamais ici en silence.
 """
 from larccommon.database import db
 from larccommon.logger import log_error
-from LarcConfig.common.db_access import TEACHER_ID_MIN, TEACHER_ID_MAX
+
+from LarcConfig.common.campus import Campus
+from LarcConfig.common.db_access import TEACHER_ID_MAX, TEACHER_ID_MIN
 
 
 def _conn():
@@ -200,16 +202,22 @@ PROGRAM_IDS = (12, 13, 22, 23)
 # Placeholder "enseignant en attente" — cf. PLACEHOLDER_TEACHER_ID (A5).
 
 
-def get_programs() -> list[dict]:
-    """Programmes du périmètre (PEI, MYP, DPFr, DPEn)."""
+def _in_list(values) -> str:
+    """Marqueurs « %s, %s, … » pour une clause IN paramétrée."""
+    return ", ".join(["%s"] * len(values))
+
+
+def get_programs(campus: Campus = None) -> list[dict]:
+    """Programmes du périmètre (PEI, MYP, DPFr, DPEn), ou ceux du campus donné."""
     c = _conn()
     if not c:
         return []
+    ids = campus.program_ids if campus is not None else PROGRAM_IDS
     try:
         cur = c.cursor()
         cur.execute(
-            "SELECT id, label, sigle FROM larcauth_program WHERE id IN (%s, %s, %s, %s) ORDER BY sigle",
-            PROGRAM_IDS,
+            f"SELECT id, label, sigle FROM larcauth_program WHERE id IN ({_in_list(ids)}) ORDER BY sigle",
+            tuple(ids),
         )
         return _rows(cur)
     except Exception as e:
@@ -219,11 +227,14 @@ def get_programs() -> list[dict]:
         return []
 
 
-def get_classrooms(program_id: int = None) -> list[dict]:
-    """Classes du périmètre, avec niveau et programme — triées par programme puis niveau."""
+def get_classrooms(program_id: int = None, campus: Campus = None) -> list[dict]:
+    """Classes du périmètre (ou du campus donné), avec niveau et programme —
+    triées par programme puis niveau. Un campus à niveaux restreints
+    (maternelle, primaire) filtre aussi sur ``lv.level_in_pgm``."""
     c = _conn()
     if not c:
         return []
+    ids = campus.program_ids if campus is not None else PROGRAM_IDS
     try:
         cur = c.cursor()
         sql = (
@@ -232,9 +243,12 @@ def get_classrooms(program_id: int = None) -> list[dict]:
             "FROM larcauth_classroom c "
             "JOIN larcauth_level lv ON lv.id = c.fk_level_id "
             "JOIN larcauth_program p ON p.id = lv.fk_program_id "
-            "WHERE lv.fk_program_id IN (%s, %s, %s, %s)"
+            f"WHERE lv.fk_program_id IN ({_in_list(ids)})"
         )
-        params = list(PROGRAM_IDS)
+        params = list(ids)
+        if campus is not None and campus.levels:
+            sql += f" AND lv.level_in_pgm IN ({_in_list(campus.levels)})"
+            params.extend(campus.levels)
         if program_id is not None:
             sql += " AND lv.fk_program_id = %s"
             params.append(program_id)
