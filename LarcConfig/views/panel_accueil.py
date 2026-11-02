@@ -317,8 +317,8 @@ class AccueilPanel(M3ScrollArea):
         today = date.today()
         self._date_lbl.setText(_fmt_long_date(today))
 
-        term_start = trim.get('start_fr') or trim.get('start_en') if trim else None
-        term_end = trim.get('end_fr') or trim.get('end_en') if trim else None
+        term_start = trim.get('start') if trim else None
+        term_end = trim.get('end') if trim else None
         unit_start = unit.get('start_fr') or unit.get('start_en') if unit else None
         unit_end = unit.get('end_fr') or unit.get('end_en') if unit else None
         drift = bool(
@@ -341,7 +341,10 @@ class AccueilPanel(M3ScrollArea):
                            or row.get('end_en')}
 
         unites_r = [_resolve(u, 'unit_nr') for u in data['unites']]
-        trimestres_r = [_resolve(t, 'trim') for t in data['trimestres']]
+        # Trimestres sans langue : libellé et dates uniques
+        trimestres_r = [{'nr': t['trim'], 'label': t.get('label') or '',
+                         'start': t.get('start'), 'end': t.get('end')}
+                        for t in data['trimestres']]
 
         self._timeline.set_data(
             ay.get('start'), ay.get('end'),
@@ -357,10 +360,9 @@ class AccueilPanel(M3ScrollArea):
         self._kv_year.set_detail(
             f"{_fmt_month_year(ay.get('start'))} → "
             f"{_fmt_month_year(ay.get('end'))}")
-        self._kv_term.set_value(label_of(trim, 'label_fr', 'label_en') or '—')
+        self._kv_term.set_value((trim.get('label') if trim else None) or '—')
         self._kv_term.set_detail(
-            f"{_fmt_month_year(label_of(trim, 'start_fr', 'start_en'))} → "
-            f"{_fmt_month_year(label_of(trim, 'end_fr', 'end_en'))}")
+            f"{_fmt_month_year(term_start)} → {_fmt_month_year(term_end)}")
         self._kv_unit.set_value(
             label_of(unit, 'label_fr', 'label_en') or str(unit_nr))
         self._kv_unit.set_detail(

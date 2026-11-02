@@ -425,11 +425,12 @@ def get_audit(app_name=None, user_name=None, table_name=None, date_from=None, da
 # ---------------------------------------------------------------
 
 def get_temps(within_year: bool = False):
-    """Année active + derniers trimestres/unités par langue (1=EN, 2=FR).
+    """Année active + trimestres (sans langue : label/start/end) + unités
+    par langue (1=EN, 2=FR).
 
-    within_year=True : ne garde que les lignes dont les dates tombent dans
-    l'année active — les lignes pré-créées de l'année suivante (ex. termes
-    « T3 2027 » vides) sont ignorées pour l'affichage du dashboard."""
+    within_year=True : pour les unités, préfère les lignes dont les dates
+    tombent dans l'année active — les lignes pré-créées de l'année suivante
+    sont ignorées pour l'affichage du dashboard."""
     c = _conn()
     if not c:
         return None
@@ -461,21 +462,20 @@ def get_temps(within_year: bool = False):
                         b['in_year'] = row
             return [b['in_year'] or b['latest'] for b in buckets.values()]
 
+        # larcauth_term = une ligne par trimestre, SANS langue : un seul
+        # libellé et une seule paire de dates (fk_language_id est ignoré).
+        # Première ligne par trim (ORDER BY id) — même règle que
+        # save_trimestre, pour que l'écran Temps et le dashboard lisent et
+        # écrivent la même ligne.
         cur.execute("""
-            SELECT t."trim", t.fk_language_id, t.label, t.start_date, t.end_date
+            SELECT t."trim", t.label, t.start_date, t.end_date
             FROM larcauth_term t
-            WHERE t.fk_language_id IN (1, 2)
-            ORDER BY t.id DESC
+            ORDER BY t."trim", t.id
         """)
         trims = {}
-        for trim, lang, label, start, end in _pick(
-                cur.fetchall(), lambda r: (r[0], r[1]),
-                lambda r: (r[3], r[4])):
-            row = trims.setdefault(trim, {'trim': trim})
-            if lang == 2:
-                row['label_fr'], row['start_fr'], row['end_fr'] = label, start, end
-            else:
-                row['label_en'], row['start_en'], row['end_en'] = label, start, end
+        for trim, label, start, end in cur.fetchall():
+            trims.setdefault(trim, {'trim': trim, 'label': label,
+                                    'start': start, 'end': end})
 
         cur.execute("""
             SELECT up.unit_nr, up.fk_language_id, up.label,
@@ -525,30 +525,23 @@ def save_annee(label, start, end, term, unit):
         return False
 
 
-def save_trimestre(trim, label_fr, label_en, start_fr, end_fr,
-                   start_en, end_en):
-    """UPDATE-first sur la dernière ligne (trim, langue) ; INSERT si absente."""
+def save_trimestre(trim, label, start, end):
+    """Met à jour le trimestre `trim` dans larcauth_term : un seul libellé
+    et une seule paire de dates, sans langue. Ligne visée = la première
+    par id (même règle que get_temps). Jamais d'INSERT."""
     c = _conn()
     if not c:
         return False
     try:
         cur = c.cursor()
-        for lang, label, start, end in ((2, label_fr, start_fr, end_fr),
-                                        (1, label_en, start_en, end_en)):
-            cur.execute("""
-                UPDATE larcauth_term SET label = %s, start_date = %s,
-                       end_date = %s
-                WHERE "trim" = %s AND fk_language_id = %s
-                  AND id = (SELECT MAX(id) FROM larcauth_term
-                            WHERE "trim" = %s AND fk_language_id = %s)
-            """, (label, start, end, trim, lang, trim, lang))
-            if cur.rowcount == 0:
-                cur.execute("""
-                    INSERT INTO larcauth_term
-                        ("trim", fk_language_id, label, start_date, end_date,
-                         created, updated)
-                    VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-                """, (trim, lang, label, start, end))
+        cur.execute("""
+            UPDATE larcauth_term SET label = %s, start_date = %s,
+                   end_date = %s, updated = NOW()
+            WHERE id = (SELECT MIN(id) FROM larcauth_term WHERE "trim" = %s)
+        """, (label, start, end, trim))
+        if cur.rowcount == 0:
+            log_error(f"save_trimestre: aucune ligne larcauth_term pour trim={trim}")
+            return False
         return True
     except Exception as e:
         from larccommon.error_reporting import get_reporter

@@ -1,4 +1,5 @@
-"""Panel Le temps — année scolaire, trimestres (3) et unités (6), FR/EN.
+"""Panel Le temps — année scolaire, trimestres (3, sans langue) et
+unités (6, FR/EN).
 
 Structure (skill input-ergonomics) :
 - HÉROS pleine largeur, couleur différente (primary_container) et gros
@@ -147,6 +148,26 @@ class _FormTab(QWidget):
         l.addStretch(1)
 
 
+class _TermTab(QWidget):
+    """Onglet Trimestre : un seul libellé et une seule paire de dates —
+    larcauth_term n'a pas de langue (fk_language_id inutile)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        l = QVBoxLayout(self)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(ds.space_xs)
+        self.w = {
+            'label': M3TextField(theme=theme_manager.phi_theme),
+            'start': _date_edit(None),
+            'end': _date_edit(None),
+        }
+        _field(l, _("panel.temps.label"), self.w['label'])
+        _field(l, _("panel.temps.start"), self.w['start'])
+        _field(l, _("panel.temps.end"), self.w['end'])
+        l.addStretch(1)
+
+
 class TempsPanel(M3ScrollArea):
     """Menu Le temps — héros (année/trimestre/unité en cours) + sections
     responsive : Année scolaire, Trimestres (3 onglets), Unités (6 onglets)."""
@@ -211,7 +232,8 @@ class TempsPanel(M3ScrollArea):
             key = f"trim{trim}"
             self._trim_keys.append(key)
             self._build_form_tab(
-                self._trim_tabs, key, f"{_('panel.temps.trimester')} {trim}")
+                self._trim_tabs, key, f"{_('panel.temps.trimester')} {trim}",
+                _TermTab)
         self._unit_keys = []
         for nr in range(1, 7):
             key = f"unit{nr}"
@@ -296,8 +318,8 @@ class TempsPanel(M3ScrollArea):
         row.addLayout(col2, 1)
         content.addLayout(row)
 
-    def _build_form_tab(self, tab_widget, key, title):
-        tab = _FormTab()
+    def _build_form_tab(self, tab_widget, key, title, tab_cls=None):
+        tab = (tab_cls or _FormTab)()
         self._tabs[key] = tab
         tab_widget.addTab(tab, title)
 
@@ -330,10 +352,11 @@ class TempsPanel(M3ScrollArea):
         self._hero_parts[0]['value'].setText(ay.get('label', '') or '—')
         self._hero_parts[0]['detail'].setText(
             f"{self._fmt(ay.get('start'))} → {self._fmt(ay.get('end'))}")
-        self._hero_parts[1]['value'].setText(self._lang_label(trim) or '—')
+        self._hero_parts[1]['value'].setText(
+            (trim.get('label') if trim else None) or '—')
         self._hero_parts[1]['detail'].setText(
-            f"{self._fmt(trim.get('start_fr')) if trim else ''} → "
-            f"{self._fmt(trim.get('end_fr')) if trim else ''}")
+            f"{self._fmt(trim.get('start')) if trim else ''} → "
+            f"{self._fmt(trim.get('end')) if trim else ''}")
         self._hero_parts[2]['value'].setText(
             f"{unit_nr} — {self._lang_label(unit) or '—'}")
         self._hero_parts[2]['detail'].setText(
@@ -347,7 +370,11 @@ class TempsPanel(M3ScrollArea):
         self._ay_unit.setValue(unit_nr)
 
         for t in data['trimestres']:
-            self._fill(self._tabs.get(f"trim{t['trim']}"), t)
+            tab = self._tabs.get(f"trim{t['trim']}")
+            if tab:
+                tab.w['label'].setText(t.get('label') or '')
+                tab.w['start'].setDate(self._qdate(t.get('start')))
+                tab.w['end'].setDate(self._qdate(t.get('end')))
         for u in data['unites']:
             self._fill(self._tabs.get(f"unit{u['unit_nr']}"), u)
 
@@ -419,11 +446,8 @@ class TempsPanel(M3ScrollArea):
 
     @safe_slot("TempsPanel.save_trimestre")
     def _save_trimestre(self, trim, w):
-        if save_trimestre(trim,
-                          w['label_fr'].text().strip(),
-                          w['label_en'].text().strip(),
-                          self._d(w['start_fr']), self._d(w['end_fr']),
-                          self._d(w['start_en']), self._d(w['end_en'])):
+        if save_trimestre(trim, w['label'].text().strip(),
+                          self._d(w['start']), self._d(w['end'])):
             self.reload()
 
     @safe_slot("TempsPanel.save_unite")
