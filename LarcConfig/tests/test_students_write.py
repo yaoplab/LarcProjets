@@ -20,8 +20,10 @@ class ScriptCursor:
     `rowcounts` = {fragment SQL: rowcount}, `notes` / `bulletin` = preuves."""
 
     def __init__(self, slot, notes=0, bulletin=False, duplicates=(), rowcounts=None,
-                 fail_on=None):
+                 fail_on=None, kept=0, default_rowcount=1):
         self.slot = slot
+        self.kept = kept
+        self.default_rowcount = default_rowcount
         self.notes = notes
         self.bulletin = bulletin
         self.duplicates = list(duplicates)
@@ -44,8 +46,11 @@ class ScriptCursor:
             self._result = [(params[0], self.notes)]
         elif "BOOL_OR" in sql:
             self._result = [(params[0], self.bulletin)]
-        elif sql.startswith("UPDATE"):
-            self.rowcount = next((n for frag, n in self.rowcounts.items() if frag in sql), 1)
+        elif sql.startswith("SELECT COUNT(*) FROM") and "student_id = %s" in sql:
+            self._result = [(self.kept,)]
+        elif sql.startswith(("UPDATE", "DELETE")):
+            self.rowcount = next((n for frag, n in self.rowcounts.items() if frag in sql),
+                                 self.default_rowcount)
 
     def fetchone(self):
         return self._result[0] if self._result else None
@@ -81,12 +86,24 @@ def _no_audit_and_known_columns():
     }
     saved = dict(db_students._COLS_CACHE)
     db_students._COLS_CACHE.update(cols)
+    from LarcConfig.common import child_reset
+    saved_content = dict(child_reset._CONTENT_CACHE)
+    child_reset._CONTENT_CACHE.update(
+        {t: [(n, d, df, True) for n, d, df in c] for t, c in cols.items()})
+    child_reset._CONTENT_CACHE.update({
+        'larcauth_learnermat_has_unit_period': [("observation_global", "text", None, True)],
+        'larcauth_learner_has_subjectgroup': [("note_on_7", "smallint", None, True)],
+        'larcauth_learner_has_term': [("observation_global", "text", None, True),
+                                      ("validated", "boolean", None, False)],
+    })
     with patch("larccommon.audit_context.attach"), patch("larccommon.audit_context.refresh"), \
             patch.object(db_students_write, "_report", create=True), \
             patch("larccommon.error_reporting.get_reporter"):
         yield
     db_students._COLS_CACHE.clear()
     db_students._COLS_CACHE.update(saved)
+    child_reset._CONTENT_CACHE.clear()
+    child_reset._CONTENT_CACHE.update(saved_content)
 
 
 def _run_with(cur):
@@ -187,27 +204,6 @@ class TestWriteModuleSql:
         src = Path(db_students.__file__).read_text(encoding='utf-8')
         code = re.sub(r'""".*?"""', '', src, flags=re.S)
         assert not re.search(r'\b(UPDATE|INSERT|DELETE)\b', code, re.I)
-
-    def test_note_reset_sql_direct_with_overrides(self):
-        sql = db_students_write.build_note_reset_sql(
-            'larcauth_learnermat_has_devpers_unit',
-            [("a", "boolean", None), ("status", "USER-DEFINED", None)])
-        assert sql.startswith("UPDATE larcauth_learnermat_has_devpers_unit t SET")
-        assert '"a" = DEFAULT' in sql and '"status" = \'-\'' in sql
-        assert "t.fk_student_id = %s" in sql and "IS TRUE" in sql
-
-    def test_note_reset_sql_via_termsubject(self):
-        sql = db_students_write.build_note_reset_sql(
-            'larcauth_learnerdp_has_termsubjectdp', [("f13_note", "ARRAY", None)])
-        assert "FROM larcauth_learner_has_termsubject lht" in sql
-        assert "lht.id = t.learner_has_termsubject_ptr_id AND lht.fk_student_id = %s" in sql
-        assert '"f13_note" = DEFAULT' in sql
-
-    def test_subjectevals_flags_reset_to_false(self):
-        sql = db_students_write.build_note_reset_sql(
-            'larcauth_learnermat_has_subjectevals_unit',
-            [("a", "boolean", None), ("value", "smallint", "0")])
-        assert '"a" = FALSE' in sql and '"value" = DEFAULT' in sql
 
 
 # ── Inscrire ─────────────────────────────────────────────────────────────
@@ -329,19 +325,38 @@ class TestRename:
 # ── Réinitialiser ────────────────────────────────────────────────────────
 
 class TestReinitialiser:
-    def test_permis_frees_slot_without_touching_notes(self):
+    def test_permis_resets_everything_of_the_child(self):
         cur = ScriptCursor((True, "Julia", "ATIEH", 1131, True), notes=0, bulletin=False,
-                           rowcounts={"larcauth_learner_has_termsubject": 0})
+                           default_rowcount=0,
+                           rowcounts={"UPDATE larcauth_aecuser": 1, "UPDATE larcauth_student": 1,
+                                      "UPDATE foyer": 1})
         with _run_with(cur):
             res = db_students_write.reinitialiser(113101)
         assert res.ok, res.message
-        ups = cur.updates()
-        assert not any("learnermat" in s for s in ups)
         names = next(p for s, p in cur.executed if s.startswith("UPDATE larcauth_aecuser"))
-        assert names[:2] == ("Name of 113101", "First_name of 113101")
-        st = next(p for s, p in cur.executed if s.startswith("UPDATE larcauth_student"))
-        assert st == (1131, 113101, True)
+        assert names == ("Name of 113101", "First_name of 113101", 113101, "ATIEH", "Julia")
+        aec = next(s for s in cur.updates() if s.startswith("UPDATE larcauth_aecuser"))
+        assert '"date_of_birth" = NULL' in aec and '"fk_foyer_id" = id' in aec
+        assert '"email" = \'en_attente@arc-en-ciel.org\'' in aec      # seed maternelle
+        st_sql, st = next((s, p) for s, p in cur.executed
+                          if s.startswith("UPDATE larcauth_student"))
+        assert st == (1131, 113101, True) and "notes_json = DEFAULT" in st_sql
+        assert any(s.startswith("UPDATE foyer") for s in cur.updates())
+        # toutes les tables learner* passent par le nettoyage de contenu
+        from LarcConfig.common import child_reset
+        for table in child_reset.RESET_TABLES:
+            assert any(s.startswith(f"UPDATE {table} t SET") for s in cur.updates()), table
         assert cur.sql()[-1] == "COMMIT"
+        assert not res.warnings
+
+    def test_never_touches_enabled_of_bulletin_tables(self):
+        cur = ScriptCursor(ACTIVE, notes=0, bulletin=False)
+        with _run_with(cur):
+            assert db_students_write.reinitialiser(223101).ok
+        for s in cur.updates():
+            if s.startswith(("UPDATE larcauth_learner_has_term t", "UPDATE larcauth_learnerprim",
+                             "UPDATE larcauth_learnermat_has_unit_period")):
+                assert "enabled" not in s.split(" WHERE ")[0]
 
     def test_interdit_refused_server_side(self):
         cur = ScriptCursor(ACTIVE, notes=3, bulletin=True)
@@ -356,12 +371,15 @@ class TestReinitialiser:
             res = db_students_write.reinitialiser(223101)
         assert not res.ok and "administrateur" in res.message and not cur.updates()
 
-    def test_admin_confirmed_erases_notes_per_table(self):
-        cur = ScriptCursor(ACTIVE, notes=4, bulletin=False,
+    def test_admin_confirmed_counts_cleaned_rows_per_table(self):
+        cur = ScriptCursor(ACTIVE, notes=4, bulletin=False, default_rowcount=0,
                            rowcounts={"UPDATE larcauth_learnerpei": 4,
                                       "UPDATE larcauth_learnerdp": 2,
                                       "UPDATE larcauth_learner_has_termothersubject": 1,
-                                      "UPDATE larcauth_learner_has_termsubject": 9})
+                                      "UPDATE larcauth_learner_has_termsubject SET": 9,
+                                      "UPDATE larcauth_aecuser": 1,
+                                      "UPDATE larcauth_student": 1,
+                                      "UPDATE foyer": 1})
         with _run_with(cur):
             res = db_students_write.reinitialiser(223101, accept_notes_erase=True)
         assert res.ok, res.message
@@ -369,11 +387,48 @@ class TestReinitialiser:
         assert res.counts['larcauth_learnerdp_has_termsubjectdp'] == 2
         assert res.counts['larcauth_learner_has_termothersubject'] == 1
         assert res.counts['larcauth_learner_has_termsubject'] == 9
-        assert "7 ligne(s) de notes" in res.message
-        # bulletin jamais touché : aucune écriture sur learner_has_term
-        assert not any("larcauth_learner_has_term " in s or "learner_has_term SET" in s
-                       for s in cur.updates())
+        assert res.counts['foyer'] == 1
+        assert "larcauth_learnermat_has_devpers_unit" not in res.counts   # 0 ligne : non listé
+        assert "7 ligne(s) de notes / observations" in res.message
         assert cur.sql()[-1] == "COMMIT"
+
+    def test_parent_links_deleted_history_reported(self):
+        cur = ScriptCursor(ACTIVE, notes=0, bulletin=False, kept=2,
+                           rowcounts={"DELETE FROM larcauth_student_parent": 3})
+        with _run_with(cur):
+            res = db_students_write.reinitialiser(223101)
+        assert res.ok
+        deletes = [(s, p) for s, p in cur.executed if s.startswith("DELETE")]
+        assert deletes == [("DELETE FROM larcauth_student_parent WHERE student_id = %s",
+                            (223101,))]
+        assert res.counts['larcauth_student_parent'] == 3
+        assert "3 lien(s) parent supprimé(s)" in res.message
+        assert not any("lien(s) parent" in w for w in res.warnings)
+        assert any("frais de scolarité" in w for w in res.warnings)
+        assert not any("compta_" in s for s in cur.updates())
+        sql = cur.sql()   # même transaction, avant le COMMIT
+        assert sql.index(deletes[0][0]) < sql.index("COMMIT")
+
+    def test_parent_delete_failure_rolls_back_everything(self):
+        cur = ScriptCursor(ACTIVE, notes=0, bulletin=False,
+                           fail_on="DELETE FROM larcauth_student_parent")
+        with _run_with(cur):
+            res = db_students_write.reinitialiser(223101)
+        assert not res.ok and cur.sql()[-1] == "ROLLBACK" and "COMMIT" not in cur.sql()
+
+    def test_shared_or_missing_foyer_is_left_alone_with_warning(self):
+        cur = ScriptCursor(ACTIVE, notes=0, bulletin=False, rowcounts={"UPDATE foyer": 0})
+        with _run_with(cur):
+            res = db_students_write.reinitialiser(223101)
+        assert res.ok and any("Foyer" in w for w in res.warnings)
+
+    def test_concurrent_change_on_personal_data_rolls_back(self):
+        cur = ScriptCursor(ACTIVE, notes=0, bulletin=False,
+                           rowcounts={"UPDATE larcauth_aecuser": 0})
+        with _run_with(cur):
+            res = db_students_write.reinitialiser(223101)
+        assert not res.ok and "modifiée entre-temps" in res.message
+        assert cur.sql()[-1] == "ROLLBACK" and "COMMIT" not in cur.sql()
 
     def test_left_student_can_be_reset(self):
         cur = ScriptCursor(LEFT, notes=0, bulletin=False)
@@ -389,7 +444,7 @@ class TestReinitialiser:
             res = db_students_write.reinitialiser(213105)
         assert not res.ok and "déjà libre" in res.message
 
-    def test_failure_during_note_erase_rolls_back_everything(self):
+    def test_failure_during_reset_rolls_back_everything(self):
         cur = ScriptCursor(ACTIVE, notes=4, bulletin=False, fail_on="UPDATE larcauth_learnerdp")
         with _run_with(cur):
             res = db_students_write.reinitialiser(223101, accept_notes_erase=True)
@@ -470,5 +525,5 @@ def test_action_bar_cancel_writes_nothing(qapp):
         bar.run(rules.REINITIALISER)
     write.assert_not_called()
     lines = conf.call_args[0][2]
-    assert any("Efface 36 ligne(s) de notes dans 2 table(s)" in line for line in lines)
+    assert any("Notes saisies effacées : 36 ligne(s)" in line for line in lines)
     assert conf.call_args[1]['danger'] is True

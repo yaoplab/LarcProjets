@@ -13,14 +13,18 @@ jamais d'INSERT ni de DELETE. Chaque action :
 
 Réinitialisation : le verdict (permis / admin / interdit) est RECALCULÉ dans
 la transaction, au moment du clic, avec les mêmes requêtes que l'écran.
-Les tables « bulletin » ne voient jamais leur colonne enabled modifiée.
+Depuis le 2026-10-27 (décision de Pat), elle efface TOUT de l'enfant
+précédent : contenu des tables learner*, données personnelles, foyer, dossier
+(cf. child_reset.py). Les tables « bulletin » ne voient jamais leur colonne
+enabled modifiée ; liens parents et historiques (sans colonne d'activation)
+sont signalés, jamais supprimés.
 """
 from dataclasses import dataclass, field
 
 from larccommon.database import db
 from larccommon.logger import log_error
 
-from LarcConfig.common import db_students
+from LarcConfig.common import child_reset, db_students
 from LarcConfig.common.campus import campus_of_classroom
 from LarcConfig.common.student_slot_rules import (
     ADMIN,
@@ -34,16 +38,6 @@ from LarcConfig.common.student_slot_rules import (
 )
 
 COLLEGE_LYCEE = 'college_lycee'
-
-# Valeur « vide » d'une colonne de note quand le défaut SQL (NULL) ne suit pas
-# la convention des lignes jamais saisies (relevé en base le 2026-10-26).
-_RESET_OVERRIDES = {
-    # 2,1 M lignes : status '-' (non évalué), a/pa/na NULL
-    'larcauth_learnermat_has_devpers_unit': {'status': "'-'"},
-    # 50 k lignes : a/pa/na FALSE, status NULL
-    'larcauth_learnermat_has_subjectevals_unit': {'a': 'FALSE', 'pa': 'FALSE', 'na': 'FALSE'},
-}
-
 
 @dataclass
 class ActionResult:
@@ -256,28 +250,14 @@ def rename(student_id: int, last_name: str, first_name: str) -> ActionResult:
 
 # ── 4. Réinitialiser la place ────────────────────────────────────────────
 
-def build_note_reset_sql(table: str, cols: list) -> str:
-    """UPDATE remettant les colonnes de notes d'un élève à leur valeur vide
-    (DEFAULT, ou la convention de _RESET_OVERRIDES), sur les seules lignes
-    portant une note saisie. Paramètre : id élève."""
-    overrides = _RESET_OVERRIDES.get(table, {})
-    sets = ", ".join(f"{db_students._quote(n)} = {overrides.get(n, 'DEFAULT')}"
-                     for n, _d, _df in cols)
-    any_filled = " OR ".join(db_students.filled_expr(n, d, df) for n, d, df in cols)
-    if table in db_students._VIA_TERMSUBJECT:
-        return (f"UPDATE {table} t SET {sets} "
-                "FROM larcauth_learner_has_termsubject lht "
-                "WHERE lht.id = t.learner_has_termsubject_ptr_id AND lht.fk_student_id = %s "
-                f"AND ({any_filled})")
-    return f"UPDATE {table} t SET {sets} WHERE t.fk_student_id = %s AND ({any_filled})"
-
-
 def reinitialiser(student_id: int, accept_notes_erase: bool = False) -> ActionResult:
-    """Remet la place à l'état libre (nom gabarit standard, enabled=FALSE).
+    """Remet la place à l'état d'une place libre jamais utilisée.
 
     Verdict recalculé dans la transaction : interdit → refus ; admin → refus
-    si accept_notes_erase est faux (confirmation admin non donnée), sinon
-    effacement des notes de l'élève dans les tables de notes du campus."""
+    si accept_notes_erase est faux (confirmation admin non donnée). Sinon,
+    tout ce qui appartient à l'enfant est remis à vide (child_reset) :
+    notes, observations et commentaires de toutes les tables learner*,
+    inscriptions, données personnelles, dossier, foyer."""
     def action(cur):
         slot = _lock_slot(cur, student_id)
         if slot['placeholder'] and not slot['enabled']:
@@ -292,28 +272,52 @@ def reinitialiser(student_id: int, accept_notes_erase: bool = False) -> ActionRe
             raise _Refused("Des notes existent : la réinitialisation demande la confirmation "
                            "d'un administrateur (effacement des notes).")
         counts = {}
-        if verdict == ADMIN:
-            for table in db_students.note_tables(campus_key):
-                if not notes.get(table):
-                    continue
-                cols = db_students.note_columns(table, cur)
-                cur.execute(build_note_reset_sql(table, cols), (student_id,))
+        # 1. Contenu de l'enfant dans les tables learner* (notes, observations…)
+        for table in child_reset.RESET_TABLES:
+            cols = child_reset.content_columns(table, cur)
+            if not cols:
+                continue
+            cur.execute(child_reset.build_content_reset_sql(table, cols), (student_id,))
+            if cur.rowcount:
                 counts[table] = cur.rowcount
+        # 2. Inscriptions aux matières
         counts['larcauth_learner_has_termsubject'] = _disable_enrolments(cur, student_id)
+        # 3. Identité et données personnelles (gardé par les anciens noms)
         last, first = placeholder_names(student_id)
-        _set_names(cur, student_id, slot, last, first)
-        cur.execute(
-            "UPDATE larcauth_student SET enabled = FALSE, s_classroom_id = %s, updated_s = NOW() "
-            "WHERE aecuser_ptr_id = %s AND enabled = %s",
-            (classroom_of(student_id), student_id, slot['enabled']),
-        )
+        cur.execute(child_reset.build_aecuser_reset_sql(campus_key),
+                    (last, first, student_id, slot['last_name'], slot['first_name']))
+        _one(cur, "données personnelles")
+        # 4. Dossier élève (gardé par l'état ancien)
+        cur.execute(child_reset.STUDENT_RESET_SQL,
+                    (classroom_of(student_id), student_id, slot['enabled']))
         _one(cur, "réinitialisation")
         counts['larcauth_aecuser'] = 1
         counts['larcauth_student'] = 1
-        erased = sum(v for k, v in counts.items() if k in notes)
-        msg = f"Place {student_id} libérée."
+        # 5. Foyer propre à l'élève (jamais un foyer partagé)
+        warnings = []
+        cur.execute(child_reset.FOYER_RESET_SQL, (student_id,))
+        if cur.rowcount:
+            counts['foyer'] = cur.rowcount
+        else:
+            warnings.append("Foyer absent ou partagé avec un autre compte : non modifié.")
+        # 6. Liens parents de CET élève : seule suppression autorisée (accord de
+        #    Pat, 2026-11-02 — table de liaison sans colonne d'activation)
+        cur.execute(child_reset.PARENT_LINKS_DELETE_SQL, (student_id,))
+        if cur.rowcount:
+            counts['larcauth_student_parent'] = cur.rowcount
+        # 7. Historiques sans colonne d'activation : conservés et signalés
+        for table, column, label in child_reset.KEPT_TABLES:
+            cur.execute(child_reset.build_kept_count_sql(table, column), (student_id,))
+            r = cur.fetchone()
+            if r and r[0]:
+                warnings.append(f"{r[0]} {label} conservé(s) ({table}) : retrait impossible "
+                                "sans suppression — à traiter à part.")
+        erased = sum(v for k, v in counts.items() if k in child_reset.RESET_TABLES)
+        msg = f"Place {student_id} libérée : données de l'enfant remises à zéro."
         if erased:
-            msg += f" {erased} ligne(s) de notes effacée(s)."
-        return ActionResult(True, msg, counts)
+            msg += f" {erased} ligne(s) de notes / observations vidée(s)."
+        if counts.get('larcauth_student_parent'):
+            msg += f" {counts['larcauth_student_parent']} lien(s) parent supprimé(s)."
+        return ActionResult(True, msg, counts, warnings)
 
     return _run("reinitialiser", action)

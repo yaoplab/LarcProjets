@@ -416,16 +416,45 @@ def count_active_enrolments(student_id: int, cur) -> int:
 
 
 def get_action_preview(student_id: int, campus_key: str) -> dict:
-    """Chiffres affichés dans les confirmations : inscriptions actives,
-    notes par table, bulletin. None par valeur illisible."""
+    """Chiffres affichés dans les confirmations (SELECT uniquement) :
+    inscriptions actives, notes par table, bulletin, lignes portant encore du
+    contenu (notes / observations / commentaires) par table learner*,
+    éléments conservés (liens parents, historiques) et fichiers sur disque.
+    None par valeur illisible."""
+    from LarcConfig.common import child_reset  # import local : child_reset importe ce module
     c = _conn()
-    out = {'enrolments': None, 'notes': None, 'bulletin': None}
+    out = {'enrolments': None, 'notes': None, 'bulletin': None, 'content': None,
+           'parents': None, 'kept': None, 'files': child_reset.disk_files(student_id)}
     if not c:
         return out
     cur = c.cursor()
+
+    def content():
+        res = {}
+        for table in child_reset.RESET_TABLES:
+            cols = child_reset.content_columns(table, cur)
+            if cols:
+                cur.execute(child_reset.build_content_count_sql(table, cols), (student_id,))
+                res[table] = cur.fetchone()[0]
+        return res
+
+    def _scalar(sql):
+        cur.execute(sql, (student_id,))
+        return cur.fetchone()[0]
+
+    def kept():
+        res = {}
+        for table, column, label in child_reset.KEPT_TABLES:
+            cur.execute(child_reset.build_kept_count_sql(table, column), (student_id,))
+            res[label] = cur.fetchone()[0]
+        return res
+
     for key, fn in (('enrolments', lambda: count_active_enrolments(student_id, cur)),
                     ('notes', lambda: notes_by_table(student_id, campus_key, cur)),
-                    ('bulletin', lambda: bulletin_of(student_id, campus_key, cur))):
+                    ('bulletin', lambda: bulletin_of(student_id, campus_key, cur)),
+                    ('content', content),
+                    ('parents', lambda: _scalar(child_reset.PARENT_LINKS_COUNT_SQL)),
+                    ('kept', kept)):
         try:
             out[key] = fn()
         except Exception as e:

@@ -19,6 +19,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QWidget
 
 from LarcConfig.common import db_students, db_students_write
+from LarcConfig.common.child_reset import PERSONAL_LABELS
 from LarcConfig.common.student_slot_rules import (
     ACTIF,
     ACTION_LABELS,
@@ -41,6 +42,9 @@ _TABLE_LABELS = {
     'larcauth_learnerpei_has_termsubjectpei': "notes PEI / MYP",
     'larcauth_learnerdp_has_termsubjectdp': "notes DP",
     'larcauth_learner_has_termothersubject': "autres matières",
+    'larcauth_learnermat_has_unit_period': "bilan d'unité (maternelle)",
+    'larcauth_learner_has_subjectgroup': "notes par groupe de matières",
+    'larcauth_learner_has_term': "bilan du trimestre",
 }
 
 
@@ -169,21 +173,52 @@ class SlotActionBar(QWidget):
 
     def _reinitialiser(self, row):
         preview = db_students.get_action_preview(row['id'], self._campus.key)
-        notes = preview['notes'] or {}
-        n_notes = sum(notes.values())
-        lines = [f"La place {row['id']} redevient libre (nom gabarit « Name of {row['id']} »).",
-                 f"{_name(row)} disparaît de la classe."]
-        n = preview['enrolments']
-        lines.append("Désinscrit(e) de " + ("? (illisible)" if n is None else str(n))
-                     + " matière(s).")
-        admin = row['verdict'] == ADMIN or n_notes > 0
-        if admin:
-            tables = [f"{v} ligne(s) — {_TABLE_LABELS.get(t, t)}" for t, v in notes.items() if v]
-            lines.append(f"Efface {n_notes} ligne(s) de notes dans {len(tables)} table(s) :")
-            lines.extend(f"   {t}" for t in tables)
-            lines.append("Confirmation administrateur : cet effacement est définitif.")
-        if not confirm(self, "Réinitialiser la place", lines,
-                       "Effacer les notes et libérer" if admin else "Libérer la place",
-                       danger=admin):
+        lines = reset_confirmation_lines(row, preview)
+        admin = row['verdict'] == ADMIN or sum((preview['notes'] or {}).values()) > 0
+        if not confirm(self, "Réinitialiser la place — tout effacer", lines,
+                       "Tout effacer et libérer" if admin else "Libérer la place",
+                       danger=True):
             return None
         return db_students_write.reinitialiser(row['id'], accept_notes_erase=admin)
+
+
+def _count(value) -> str:
+    return "? (illisible)" if value is None else str(value)
+
+
+def reset_confirmation_lines(row: dict, preview: dict) -> list:
+    """Conséquences d'une réinitialisation complète, chiffrées (décision de
+    Pat du 2026-10-27 : tout ce qui concerne l'enfant précédent est effacé)."""
+    sid = row['id']
+    notes = preview.get('notes')
+    content = preview.get('content')
+    lines = [f"La place {sid} redevient une place libre (« Name of {sid} ») ; "
+             f"{_name(row)} disparaît de la classe."]
+    n_notes = None if notes is None else sum(notes.values())
+    lines.append(f"Notes saisies effacées : {_count(n_notes)} ligne(s)"
+                 + (" — confirmation administrateur." if n_notes else "."))
+    if content is None:
+        lines.append("Notes, observations et commentaires : ? (illisible) — tout sera vidé.")
+    else:
+        used = {t: n for t, n in content.items() if n}
+        lines.append(f"Notes, observations et commentaires vidés : {sum(used.values())} "
+                     f"ligne(s) dans {len(used)} table(s).")
+        lines.extend(f"   {n} — {_TABLE_LABELS.get(t, t)}" for t, n in used.items())
+    lines.append(f"Désinscrit(e) de {_count(preview.get('enrolments'))} matière(s).")
+    lines.append("Données personnelles remises à zéro : " + ", ".join(PERSONAL_LABELS) + ".")
+    lines.append(f"Liens parents supprimés : {_count(preview.get('parents'))} "
+                 "(les fiches des parents restent).")
+    kept = preview.get('kept')
+    if kept is None:
+        lines.append("Historique conservé : ? (illisible).")
+    else:
+        for label, n in kept.items():
+            if n:
+                lines.append(f"CONSERVÉ : {n} {label} — retrait impossible sans "
+                             "suppression, à traiter à part.")
+    files = preview.get('files') or []
+    if files:
+        lines.append("Photo et fichiers sur disque à retirer par le secrétariat :")
+        lines.extend(f"   {f}" for f in files)
+    lines.append("Cette remise à zéro est définitive.")
+    return lines
