@@ -2,3 +2,6 @@ PySide6>=6.6.0
 psycopg2-binary>=2.9.9
 pandas>=2.0.0
 sqlalchemy>=2.0.0
+icalendar>=6.0
+recurring-ical-events>=3.0
+tzdata
