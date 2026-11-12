@@ -12,11 +12,11 @@ Structure (skill input-ergonomics) :
 """
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from phibuilder.widgets import (
-    M3Button, M3DateEdit, M3Label, M3ScrollArea, M3TabWidget, M3TextField,
+    M3Button, M3DateEdit, M3Frame, M3Label, M3ScrollArea, M3TabWidget, M3TextField,
 )
 from phibuilder.phi.scale import SpacingToken
 from larccommon.design_system import ds
@@ -71,7 +71,7 @@ def _save_btn(slot):
 def _lang_col(parent_layout, title, label_field, start_field, end_field):
     """Colonne FR ou EN : label + début + fin (dates cliquables).
     addStretch final : sans lui, l'espace vertical de l'onglet est absorbé
-    par les QLabel (politique Preferred) qui se gonflent et décalent tout."""
+    par les libellés (politique Preferred) qui se gonflent et décalent tout."""
     col = QVBoxLayout()
     col.setSpacing(ds.space_xs)
     col.addWidget(_lbl(title, "label_medium"))
@@ -93,7 +93,7 @@ class _SectionCard(QFrame):
         v.setContentsMargins(ds.space_md, ds.space_sm, ds.space_md, ds.space_md)
         v.setSpacing(ds.space_sm)
         head = QHBoxLayout()
-        self._title_lbl = QLabel(title)
+        self._title_lbl = _lbl(title, "title_small")  # QSS posée par _style()
         head.addWidget(self._title_lbl)
         head.addStretch(1)
         if header_widget is not None:
@@ -189,7 +189,7 @@ class TempsPanel(M3ScrollArea):
 
         # HÉROS — couleur différente (primary_container), gros caractères :
         # année en cours + trimestre en cours + unité en cours
-        self._hero = QFrame()
+        self._hero = M3Frame(theme=phi)  # QSS posée par _style_hero()
         self._hero.setAttribute(Qt.WA_StyledBackground, True)
         hl = QHBoxLayout(self._hero)
         hl.setContentsMargins(ds.space_lg, ds.space_md,
@@ -257,7 +257,7 @@ class TempsPanel(M3ScrollArea):
         col.setSpacing(ds.space_xxs)
         head = QHBoxLayout()
         head.setSpacing(ds.space_sm)
-        icon_lbl = QLabel()
+        icon_lbl = _lbl('')
         head.addWidget(icon_lbl)
         t = _lbl(title, "body_medium")
         head.addWidget(t)
